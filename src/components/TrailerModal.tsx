@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 
 interface TrailerModalProps {
   title: string
@@ -55,7 +55,6 @@ function loadYoutubeApi(): Promise<YoutubeNamespace> {
 
 export function TrailerModal({ title, youtubeKey, onClose }: TrailerModalProps) {
   const playerRef = useRef<YoutubePlayer | null>(null)
-  const [volume, setVolume] = useState(START_VOLUME)
 
   useEffect(() => {
     function onKey(event: KeyboardEvent) {
@@ -96,12 +95,6 @@ export function TrailerModal({ title, youtubeKey, onClose }: TrailerModalProps) 
     }
   }, [youtubeKey])
 
-  function handleVolume(next: number) {
-    setVolume(next)
-    playerRef.current?.setVolume(next)
-    if (next > 0) playerRef.current?.unMute()
-  }
-
   return (
     <div className="trailer-overlay" onClick={onClose} role="presentation">
       <div
@@ -117,18 +110,6 @@ export function TrailerModal({ title, youtubeKey, onClose }: TrailerModalProps) 
         <div className="trailer-frame-wrap">
           <div id={PLAYER_ID} />
         </div>
-        <label className="trailer-volume">
-          Volume
-          <input
-            type="range"
-            min="0"
-            max="100"
-            value={volume}
-            onChange={(event) => handleVolume(Number(event.target.value))}
-            aria-label="Trailer volume"
-          />
-          <span>{volume}%</span>
-        </label>
       </div>
     </div>
   )

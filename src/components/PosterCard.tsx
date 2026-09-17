@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { posterUrl } from '../api/tmdb'
 import type { MediaType, TmdbTitle } from '../types'
@@ -16,6 +16,7 @@ interface PosterCardProps {
   inLibrary?: boolean
   onAdd?: () => void
   adding?: boolean
+  requireImage?: boolean
 }
 
 export function PosterCard({
@@ -25,15 +26,19 @@ export function PosterCard({
   inLibrary,
   onAdd,
   adding,
+  requireImage = false,
 }: PosterCardProps) {
   const image = posterUrl(title.posterPath, 'w500')
   const recsTo = `/title/${title.mediaType}/${title.tmdbId}`
+  const [broken, setBroken] = useState(false)
+
+  if (requireImage && (!image || broken)) return null
 
   return (
     <article className="poster-card">
       <Link className="poster-link" to={recsTo} title={title.title}>
-        {image ? (
-          <img src={image} alt="" className="poster-image" />
+        {image && !broken ? (
+          <img src={image} alt="" className="poster-image" onError={() => setBroken(true)} />
         ) : (
           <div className="poster-fallback">{title.title}</div>
         )}

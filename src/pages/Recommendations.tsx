@@ -135,6 +135,7 @@ export function Recommendations() {
                   inLibrary={isInLibrary(title.mediaType, title.tmdbId)}
                   onAdd={() => handleAdd(title)}
                   adding={pendingId === title.tmdbId}
+                  requireImage
                 />
               ))}
             </div>

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { searchTitles } from '../api/tmdb'
+import { Link } from 'react-router-dom'
+import { posterUrl, searchTitles } from '../api/tmdb'
 import { useCollection } from '../store/CollectionContext'
 import type { SearchFilter, TmdbTitle } from '../types'
-import { PosterCard } from './PosterCard'
 
 const FILTERS: { id: SearchFilter; label: string }[] = [
   { id: 'all', label: 'All' },
@@ -10,6 +10,12 @@ const FILTERS: { id: SearchFilter; label: string }[] = [
   { id: 'tv', label: 'Series' },
   { id: 'anime', label: 'Anime' },
 ]
+
+const TYPE_LABEL = {
+  movie: 'Movie',
+  tv: 'Series',
+  anime: 'Anime',
+} as const
 
 export function SearchBar() {
   const { addTitle, isInLibrary } = useCollection()
@@ -19,6 +25,7 @@ export function SearchBar() {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [pendingId, setPendingId] = useState<number | null>(null)
+  const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set())
   const boxRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -34,6 +41,7 @@ export function SearchBar() {
       try {
         const next = await searchTitles(trimmed, filter)
         setResults(next.slice(0, 12))
+        setBrokenIds(new Set())
         setOpen(true)
       } catch {
         setResults([])
@@ -71,37 +79,79 @@ export function SearchBar() {
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         onFocus={() => results.length > 0 && setOpen(true)}
-        placeholder="Search to add a title…"
+        placeholder="Search titles…"
         aria-label="Search titles"
       />
       {open && query.trim().length >= 2 ? (
         <div className="search-panel">
-          <div className="filter-pills">
-            {FILTERS.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={filter === item.id ? 'pill active' : 'pill'}
-                onClick={() => setFilter(item.id)}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-          {loading ? <p className="search-status">Searching…</p> : null}
-          {!loading && results.length === 0 ? (
-            <p className="search-status">No matches.</p>
-          ) : (
-            <div className="search-grid">
-              {results.map((title) => (
-                <PosterCard
-                  key={`${title.mediaType}-${title.tmdbId}`}
-                  title={title}
-                  inLibrary={isInLibrary(title.mediaType, title.tmdbId)}
-                  onAdd={() => handleAdd(title)}
-                  adding={pendingId === title.tmdbId}
-                />
+          <div className="search-panel-head">
+            <div className="filter-pills search-filters">
+              {FILTERS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={filter === item.id ? 'pill active' : 'pill'}
+                  onClick={() => setFilter(item.id)}
+                >
+                  {item.label}
+                </button>
               ))}
+            </div>
+            <p className="search-count">
+              {loading ? 'Searching…' : `${results.length} result${results.length === 1 ? '' : 's'}`}
+            </p>
+          </div>
+          {!loading && results.length === 0 ? (
+            <p className="search-status">No titles matched that search.</p>
+          ) : (
+            <div className="search-list">
+              {results.map((title) => {
+                const image = posterUrl(title.posterPath, 'w185')
+                const key = `${title.mediaType}-${title.tmdbId}`
+                if (!image || brokenIds.has(key)) return null
+                const inLibrary = isInLibrary(title.mediaType, title.tmdbId)
+                return (
+                  <article key={key} className="search-hit">
+                    <Link
+                      className="search-hit-main"
+                      to={`/title/${title.mediaType}/${title.tmdbId}`}
+                      onClick={() => setOpen(false)}
+                    >
+                      <img
+                        src={image}
+                        alt=""
+                        className="search-hit-poster"
+                        onError={() =>
+                          setBrokenIds((current) => {
+                            const next = new Set(current)
+                            next.add(key)
+                            return next
+                          })
+                        }
+                      />
+                      <div className="search-hit-copy">
+                        <h3>{title.title}</h3>
+                        <p>
+                          <span className="search-hit-badge">{TYPE_LABEL[title.mediaType]}</span>
+                          {title.year ? <span>{title.year}</span> : null}
+                        </p>
+                      </div>
+                    </Link>
+                    {inLibrary ? (
+                      <span className="in-library">In library</span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-add"
+                        onClick={() => handleAdd(title)}
+                        disabled={pendingId === title.tmdbId}
+                      >
+                        {pendingId === title.tmdbId ? 'Adding…' : '+ Add'}
+                      </button>
+                    )}
+                  </article>
+                )
+              })}
             </div>
           )}
         </div>

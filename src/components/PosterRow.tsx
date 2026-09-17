@@ -48,6 +48,7 @@ export function PosterRow({ heading, items, loading, error, browseTo }: PosterRo
                 inLibrary={isInLibrary(title.mediaType, title.tmdbId)}
                 onAdd={() => handleAdd(title)}
                 adding={pendingId === title.tmdbId}
+                requireImage
               />
             ))}
         {!loading && !error && items.length === 0 ? (

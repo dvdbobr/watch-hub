@@ -1,4 +1,4 @@
-import type { MediaType, SearchFilter, TitleDetails, TmdbTitle } from '../types'
+import type { EpisodeSummary, MediaType, SearchFilter, TitleDetails, TmdbTitle } from '../types'
 
 const BASE = 'https://api.themoviedb.org/3'
 const IMAGE_BASE = 'https://image.tmdb.org/t/p'
@@ -50,6 +50,14 @@ interface TmdbFullDetails {
   vote_count?: number
   status?: string
   next_episode_to_air?: TmdbEpisodeAir | null
+  seasons?: {
+    season_number?: number
+    name?: string
+    episode_count?: number
+    vote_average?: number
+    air_date?: string
+    poster_path?: string | null
+  }[]
   videos?: {
     results?: {
       key?: string
@@ -59,6 +67,9 @@ interface TmdbFullDetails {
       name?: string
     }[]
   }
+  external_ids?: { imdb_id?: string | null }
+  original_name?: string
+  original_title?: string
 }
 
 export function hasApiKey(): boolean {
@@ -71,6 +82,11 @@ export function posterUrl(
 ): string | null {
   if (!path) return null
   return `${IMAGE_BASE}/${size}${path}`
+}
+
+export function stillUrl(path: string | null): string | null {
+  if (!path) return null
+  return `${IMAGE_BASE}/w500${path}`
 }
 
 export function backdropUrl(path: string | null): string | null {
@@ -96,6 +112,10 @@ function mapNextEpisode(episode?: TmdbEpisodeAir | null): TitleDetails['nextEpis
   }
 }
 
+function hasPoster(item: TmdbMovie): boolean {
+  return Boolean(item.poster_path)
+}
+
 function mapTitle(item: TmdbMovie, mediaType: MediaType): TmdbTitle {
   return {
     tmdbId: item.id,
@@ -105,6 +125,10 @@ function mapTitle(item: TmdbMovie, mediaType: MediaType): TmdbTitle {
     year: yearFromDate(item.release_date || item.first_air_date),
     overview: item.overview || '',
   }
+}
+
+function mapTitles(items: TmdbMovie[], mediaType: MediaType): TmdbTitle[] {
+  return items.filter(hasPoster).map((item) => mapTitle(item, mediaType))
 }
 
 function inferMediaType(item: TmdbMovie): MediaType | null {
@@ -143,23 +167,23 @@ export async function searchTitles(
 
   if (filter === 'movie') {
     const data = await tmdb<TmdbListResponse>('/search/movie', { query: trimmed })
-    return data.results.map((item) => mapTitle(item, 'movie'))
+    return mapTitles(data.results, 'movie')
   }
 
   if (filter === 'tv') {
     const data = await tmdb<TmdbListResponse>('/search/tv', { query: trimmed })
-    return data.results.map((item) => mapTitle(item, 'tv'))
+    return mapTitles(data.results, 'tv')
   }
 
   if (filter === 'anime') {
     const data = await tmdb<TmdbListResponse>('/search/tv', { query: trimmed })
-    return data.results.map((item) => mapTitle(item, 'anime'))
+    return mapTitles(data.results, 'anime')
   }
 
   const data = await tmdb<TmdbListResponse>('/search/multi', { query: trimmed })
   return data.results.flatMap((item) => {
     const mediaType = inferMediaType(item)
-    if (!mediaType) return []
+    if (!mediaType || !hasPoster(item)) return []
     return [mapTitle(item, mediaType)]
   })
 }
@@ -183,11 +207,12 @@ export async function getTitleDetails(
   tmdbId: number,
 ): Promise<TitleDetails> {
   const path = mediaType === 'movie' ? `/movie/${tmdbId}` : `/tv/${tmdbId}`
-  const data = await tmdb<TmdbFullDetails>(path, { append_to_response: 'videos' })
+  const data = await tmdb<TmdbFullDetails>(path, { append_to_response: 'videos,external_ids' })
   return {
     tmdbId: data.id,
     mediaType,
     title: data.title || data.name || 'Untitled',
+    originalTitle: data.original_title || data.original_name || data.title || data.name || 'Untitled',
     posterPath: data.poster_path,
     year: yearFromDate(data.release_date || data.first_air_date),
     overview: data.overview || '',
@@ -202,7 +227,58 @@ export async function getTitleDetails(
     nextEpisode: mediaType === 'movie' ? null : mapNextEpisode(data.next_episode_to_air),
     status: data.status || '',
     trailerKey: pickTrailerKey(data.videos),
+    imdbId: data.external_ids?.imdb_id || null,
+    seasons:
+      mediaType === 'movie'
+        ? []
+        : (data.seasons || [])
+            .map((season) => ({
+              seasonNumber: season.season_number ?? 0,
+              name: season.name || `Season ${season.season_number}`,
+              episodeCount: season.episode_count ?? 0,
+              voteAverage: season.vote_average ?? 0,
+              year: yearFromDate(season.air_date),
+            }))
+            .sort((left, right) => {
+              if (left.seasonNumber === 0) return 1
+              if (right.seasonNumber === 0) return -1
+              return left.seasonNumber - right.seasonNumber
+            }),
   }
+}
+
+interface TmdbSeasonPayload {
+  season_number?: number
+  episodes?: {
+    episode_number?: number
+    name?: string
+    overview?: string
+    air_date?: string
+    vote_average?: number
+    vote_count?: number
+    still_path?: string | null
+    runtime?: number | null
+  }[]
+}
+
+export async function getSeasonEpisodes(
+  tmdbId: number,
+  seasonNumber: number,
+): Promise<EpisodeSummary[]> {
+  const data = await tmdb<TmdbSeasonPayload>(`/tv/${tmdbId}/season/${seasonNumber}`)
+  return (data.episodes || [])
+    .filter((episode) => episode.still_path)
+    .map((episode) => ({
+      episodeNumber: episode.episode_number ?? 0,
+      seasonNumber: data.season_number ?? seasonNumber,
+      name: episode.name || `Episode ${episode.episode_number}`,
+      overview: episode.overview || '',
+      airDate: episode.air_date || '',
+      voteAverage: episode.vote_average ?? 0,
+      voteCount: episode.vote_count ?? 0,
+      stillPath: episode.still_path ?? null,
+      runtime: episode.runtime ?? null,
+    }))
 }
 
 function uniqueMovies(items: TmdbMovie[]): TmdbMovie[] {
@@ -282,16 +358,16 @@ export async function getRecommendations(title: TmdbTitle): Promise<TmdbTitle[]>
       const extra = await discoverRelatedAnime(title.tmdbId, genreIds)
       matches = uniqueMovies([...matches, ...extra])
     }
-    return matches.slice(0, 18).map((item) => mapTitle(item, 'anime'))
+    return mapTitles(matches, 'anime').slice(0, 18)
   }
 
   const mediaType = title.mediaType === 'movie' ? 'movie' : 'tv'
-  return merged.slice(0, 18).map((item) => mapTitle(item, mediaType))
+  return mapTitles(merged, mediaType).slice(0, 18)
 }
 
 export async function getUpcomingMovies(): Promise<TmdbTitle[]> {
   const data = await tmdb<TmdbListResponse>('/movie/upcoming')
-  return data.results.map((item) => mapTitle(item, 'movie'))
+  return mapTitles(data.results, 'movie')
 }
 
 export async function getUpcomingSeries(): Promise<TmdbTitle[]> {
@@ -299,7 +375,7 @@ export async function getUpcomingSeries(): Promise<TmdbTitle[]> {
     'first_air_date.gte': todayIso(),
     sort_by: 'popularity.desc',
   })
-  return data.results.map((item) => mapTitle(item, 'tv'))
+  return mapTitles(data.results, 'tv')
 }
 
 export async function getUpcomingAnime(): Promise<TmdbTitle[]> {
@@ -310,7 +386,7 @@ export async function getUpcomingAnime(): Promise<TmdbTitle[]> {
     'first_air_date.gte': todayIso(),
     sort_by: 'popularity.desc',
   })
-  return data.results.map((item) => mapTitle(item, 'anime'))
+  return mapTitles(data.results, 'anime')
 }
 
 export type DiscoverWhen = 'hype' | 'rating' | 'upcoming'
@@ -348,12 +424,13 @@ async function pagedList(
   const totalTmdbPages = responses[0]?.total_pages || 1
   let merged = uniqueMovies(responses.flatMap((entry) => entry.results || []))
   if (filter) merged = merged.filter(filter)
+  merged = merged.filter(hasPoster)
 
   const offset = filter ? start : start % TMDB_PAGE_SIZE
   const slice = merged.slice(offset, offset + perPage)
 
   return {
-    items: slice.map((item) => mapTitle(item, mediaType)),
+    items: mapTitles(slice, mediaType),
     page,
     totalPages: Math.min(20, Math.max(1, Math.ceil((totalTmdbPages * TMDB_PAGE_SIZE) / perPage))),
   }
