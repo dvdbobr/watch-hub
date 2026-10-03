@@ -1,4 +1,5 @@
 import type { EpisodeSummary, MediaType, SearchFilter, TitleDetails, TmdbTitle } from '../types'
+import { catalogKey } from '../types'
 
 const BASE = 'https://api.themoviedb.org/3'
 const IMAGE_BASE = 'https://image.tmdb.org/t/p'
@@ -17,6 +18,8 @@ interface TmdbMovie {
   genre_ids?: number[]
   origin_country?: string[]
   original_language?: string
+  popularity?: number
+  character?: string
 }
 
 interface TmdbListResponse {
@@ -186,6 +189,67 @@ export async function searchTitles(
     if (!mediaType || !hasPoster(item)) return []
     return [mapTitle(item, mediaType)]
   })
+}
+
+function uniqueTitles(items: TmdbTitle[]): TmdbTitle[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = catalogKey(item.mediaType, item.tmdbId)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+function creditFitsFilter(item: TmdbMovie, filter: SearchFilter): MediaType | null {
+  const kind = item.media_type === 'movie' ? 'movie' : item.media_type === 'tv' ? 'tv' : inferMediaType(item)
+  if (!kind) return null
+  const mediaType = kind === 'tv' && isJapaneseAnime(item) ? 'anime' : kind === 'tv' ? 'tv' : 'movie'
+  if (filter === 'all' || filter === 'person') return mediaType
+  if (filter === 'movie') return mediaType === 'movie' ? 'movie' : null
+  if (filter === 'tv') return mediaType === 'tv' ? 'tv' : null
+  if (filter === 'anime') return mediaType === 'anime' ? 'anime' : null
+  return null
+}
+
+export async function searchPersonFilmography(
+  query: string,
+  filter: SearchFilter,
+): Promise<{ name: string; titles: TmdbTitle[] } | null> {
+  const trimmed = query.trim()
+  if (!trimmed) return null
+
+  const people = await tmdb<{ results?: { id: number; name?: string }[] }>('/search/person', {
+    query: trimmed,
+  })
+  const person = people.results?.[0]
+  if (!person?.id) return null
+
+  const credits = await tmdb<{ cast?: TmdbMovie[] }>(`/person/${person.id}/combined_credits`)
+  const name = person.name || trimmed
+  const titles = uniqueTitles(
+    (credits.cast || [])
+      .slice()
+      .sort((left, right) => {
+        const byDate = (right.release_date || right.first_air_date || '').localeCompare(
+          left.release_date || left.first_air_date || '',
+        )
+        if (byDate) return byDate
+        return (right.popularity || 0) - (left.popularity || 0)
+      })
+      .flatMap((item) => {
+        const mediaType = creditFitsFilter(item, filter)
+        if (!mediaType || !hasPoster(item)) return []
+        return [
+          {
+            ...mapTitle(item, mediaType),
+            credit: item.character ? `${name} · ${item.character}` : name,
+          },
+        ]
+      }),
+  )
+
+  return { name, titles }
 }
 
 export async function getTvDetails(tmdbId: number): Promise<TmdbFullDetails> {

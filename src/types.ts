@@ -1,6 +1,6 @@
 export type MediaType = 'movie' | 'tv' | 'anime'
 export type WatchStatus = 'watching' | 'completed'
-export type SearchFilter = 'all' | MediaType
+export type SearchFilter = 'all' | MediaType | 'person'
 
 export interface TmdbTitle {
   tmdbId: number
@@ -9,6 +9,7 @@ export interface TmdbTitle {
   posterPath: string | null
   year: string
   overview: string
+  credit?: string
 }
 
 export interface NextEpisode {

@@ -1,14 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { posterUrl, searchTitles } from '../api/tmdb'
+import { posterUrl, searchPersonFilmography, searchTitles } from '../api/tmdb'
 import { useCollection } from '../store/CollectionContext'
-import type { SearchFilter, TmdbTitle } from '../types'
+import { catalogKey, type SearchFilter, type TmdbTitle } from '../types'
 
 const FILTERS: { id: SearchFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'movie', label: 'Movies' },
   { id: 'tv', label: 'Series' },
   { id: 'anime', label: 'Anime' },
+  { id: 'person', label: 'People' },
 ]
 
 const TYPE_LABEL = {
@@ -17,41 +18,78 @@ const TYPE_LABEL = {
   anime: 'Anime',
 } as const
 
+function uniqueTitles(items: TmdbTitle[]): TmdbTitle[] {
+  const seen = new Set<string>()
+  return items.filter((item) => {
+    const key = catalogKey(item.mediaType, item.tmdbId)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
 export function SearchBar() {
   const { addTitle, isInLibrary } = useCollection()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<SearchFilter>('all')
   const [results, setResults] = useState<TmdbTitle[]>([])
+  const [personName, setPersonName] = useState<string | null>(null)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [pendingId, setPendingId] = useState<number | null>(null)
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set())
+  const [includePeople, setIncludePeople] = useState(false)
+  const [runId, setRunId] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
+  const skipDebounce = useRef(false)
+  const requestId = useRef(0)
 
   useEffect(() => {
     const trimmed = query.trim()
     if (trimmed.length < 2) {
       setResults([])
+      setPersonName(null)
       setLoading(false)
       return
     }
 
+    const wait = skipDebounce.current ? 0 : 300
+    skipDebounce.current = false
+    const id = ++requestId.current
+    const withPeople = includePeople || filter === 'person'
+
     const handle = window.setTimeout(async () => {
       setLoading(true)
+      setOpen(true)
       try {
-        const next = await searchTitles(trimmed, filter)
-        setResults(next.slice(0, 12))
+        const titleHits = filter === 'person' ? [] : await searchTitles(trimmed, filter)
+        let personHits: TmdbTitle[] = []
+        let matchedPerson: string | null = null
+        if (withPeople) {
+          const person = await searchPersonFilmography(trimmed, filter)
+          if (person) {
+            matchedPerson = person.name
+            personHits = person.titles
+          }
+        }
+        if (id !== requestId.current) return
+        const merged = uniqueTitles(
+          withPeople ? [...personHits, ...titleHits] : titleHits,
+        ).slice(0, 20)
+        setResults(merged)
+        setPersonName(matchedPerson)
         setBrokenIds(new Set())
-        setOpen(true)
       } catch {
+        if (id !== requestId.current) return
         setResults([])
+        setPersonName(null)
       } finally {
-        setLoading(false)
+        if (id === requestId.current) setLoading(false)
       }
-    }, 300)
+    }, wait)
 
     return () => window.clearTimeout(handle)
-  }, [query, filter])
+  }, [query, filter, includePeople, runId])
 
   useEffect(() => {
     function onPointerDown(event: PointerEvent) {
@@ -72,16 +110,30 @@ export function SearchBar() {
     }
   }
 
+  function handleSubmit(event: FormEvent) {
+    event.preventDefault()
+    if (query.trim().length < 2) return
+    skipDebounce.current = true
+    setIncludePeople(true)
+    setRunId((value) => value + 1)
+    setOpen(true)
+  }
+
   return (
     <div className="search-bar" ref={boxRef}>
-      <input
-        className="search-input"
-        value={query}
-        onChange={(event) => setQuery(event.target.value)}
-        onFocus={() => results.length > 0 && setOpen(true)}
-        placeholder="Search titles…"
-        aria-label="Search titles"
-      />
+      <form onSubmit={handleSubmit}>
+        <input
+          className="search-input"
+          value={query}
+          onChange={(event) => {
+            setIncludePeople(false)
+            setQuery(event.target.value)
+          }}
+          onFocus={() => results.length > 0 && setOpen(true)}
+          placeholder="Search titles or people…"
+          aria-label="Search titles or people"
+        />
+      </form>
       {open && query.trim().length >= 2 ? (
         <div className="search-panel">
           <div className="search-panel-head">
@@ -98,11 +150,19 @@ export function SearchBar() {
               ))}
             </div>
             <p className="search-count">
-              {loading ? 'Searching…' : `${results.length} result${results.length === 1 ? '' : 's'}`}
+              {loading
+                ? 'Searching…'
+                : `${results.length} result${results.length === 1 ? '' : 's'}${
+                    personName ? ` · ${personName}` : ''
+                  }`}
             </p>
           </div>
           {!loading && results.length === 0 ? (
-            <p className="search-status">No titles matched that search.</p>
+            <p className="search-status">
+              {filter === 'person'
+                ? 'No people matched that search.'
+                : 'No titles matched that search. Press Enter to search by actor name.'}
+            </p>
           ) : (
             <div className="search-list">
               {results.map((title) => {
@@ -134,6 +194,7 @@ export function SearchBar() {
                         <p>
                           <span className="search-hit-badge">{TYPE_LABEL[title.mediaType]}</span>
                           {title.year ? <span>{title.year}</span> : null}
+                          {title.credit ? <span>{title.credit}</span> : null}
                         </p>
                       </div>
                     </Link>

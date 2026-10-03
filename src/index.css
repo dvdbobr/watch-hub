@@ -165,6 +165,10 @@ img {
   min-width: 0;
 }
 
+.search-bar form {
+  width: 100%;
+}
+
 .search-bar-spacer {
   min-height: 44px;
 }
@@ -275,6 +279,7 @@ img {
 .search-hit-copy p {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.45rem;
   color: var(--muted);
   font-size: 0.78rem;
