@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchSeasonImdb, type SeasonImdb } from '../api/ratings'
 import { getSeasonEpisodes, stillUrl } from '../api/tmdb'
 import type { EpisodeSummary, SeasonSummary } from '../types'
 
 interface SeasonGuideProps {
   tmdbId: number
+  imdbId: string | null
   seasons: SeasonSummary[]
 }
 
@@ -25,9 +27,10 @@ function formatAirDate(iso: string): string {
   return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function EpisodeRow({ episode }: { episode: EpisodeSummary }) {
+function EpisodeRow({ episode, imdb }: { episode: EpisodeSummary; imdb: number | null }) {
   const still = stillUrl(episode.stillPath)
   const [broken, setBroken] = useState(false)
+  const score = imdb ?? episode.voteAverage
 
   if (!still || broken) return null
 
@@ -46,15 +49,20 @@ function EpisodeRow({ episode }: { episode: EpisodeSummary }) {
       <td className="col-date">{formatAirDate(episode.airDate)}</td>
       <td className="col-runtime">{episode.runtime ? `${episode.runtime} min` : '—'}</td>
       <td className="col-score">
-        <span className={`score-chip ${scoreTone(episode.voteAverage)}`}>
-          {scoreLabel(episode.voteAverage)}
-        </span>
+        <span className={`score-chip ${scoreTone(score)}`}>{scoreLabel(score)}</span>
       </td>
     </tr>
   )
 }
 
-function EpisodeTable({ episodes }: { episodes: EpisodeSummary[] }) {
+function EpisodeTable({
+  episodes,
+  imdb,
+}: {
+  episodes: EpisodeSummary[]
+  imdb: SeasonImdb | null
+}) {
+  const rated = Boolean(imdb && Object.keys(imdb.episodes).length)
   return (
     <div className="episode-table-wrap">
       <table className="episode-table">
@@ -64,7 +72,7 @@ function EpisodeTable({ episodes }: { episodes: EpisodeSummary[] }) {
             <th>Title</th>
             <th className="col-date">Aired</th>
             <th className="col-runtime">Runtime</th>
-            <th className="col-score">Rating</th>
+            <th className="col-score">{rated ? 'IMDb' : 'Rating'}</th>
           </tr>
         </thead>
         <tbody>
@@ -72,6 +80,7 @@ function EpisodeTable({ episodes }: { episodes: EpisodeSummary[] }) {
             <EpisodeRow
               key={`${episode.seasonNumber}-${episode.episodeNumber}`}
               episode={episode}
+              imdb={imdb?.episodes[episode.episodeNumber] ?? null}
             />
           ))}
         </tbody>
@@ -89,12 +98,16 @@ interface SeasonView {
 function SeasonBody({
   view,
   seasons,
+  imdb,
 }: {
   view: SeasonView
   seasons: SeasonSummary[]
+  imdb: SeasonImdb | null
 }) {
   const current = seasons.find((season) => season.seasonNumber === view.seasonNumber)
   if (!current) return null
+  const average = imdb?.average ?? (current.voteAverage > 0 ? current.voteAverage : null)
+  const source = imdb?.average ? 'IMDb' : 'TMDB average'
 
   return (
     <>
@@ -106,27 +119,32 @@ function SeasonBody({
             {current.year ? ` · ${current.year}` : ''}
           </p>
         </div>
-        <div className="season-avg">
-          <span>TMDB average</span>
-          <strong className={scoreTone(current.voteAverage)}>{scoreLabel(current.voteAverage)}</strong>
-        </div>
+        {average ? (
+          <div className="season-avg">
+            <span>{source}</span>
+            <strong className={scoreTone(average)}>{scoreLabel(average)}</strong>
+          </div>
+        ) : null}
       </div>
       {view.error ? <p className="row-error">{view.error}</p> : null}
       {!view.error && view.episodes.length === 0 ? (
         <p className="search-status">No episode stills for this season.</p>
       ) : null}
-      {!view.error && view.episodes.length > 0 ? <EpisodeTable episodes={view.episodes} /> : null}
+      {!view.error && view.episodes.length > 0 ? (
+        <EpisodeTable episodes={view.episodes} imdb={imdb} />
+      ) : null}
     </>
   )
 }
 
-export function SeasonGuide({ tmdbId, seasons }: SeasonGuideProps) {
+export function SeasonGuide({ tmdbId, imdbId, seasons }: SeasonGuideProps) {
   const visible = useMemo(
     () => seasons.filter((season) => season.episodeCount > 0),
     [seasons],
   )
   const [active, setActive] = useState(visible[0]?.seasonNumber ?? 1)
   const [view, setView] = useState<SeasonView | null>(null)
+  const [seasonImdb, setSeasonImdb] = useState<Record<number, SeasonImdb>>({})
   const [layerShown, setLayerShown] = useState(true)
   const viewRef = useRef(view)
   const layerRef = useRef(layerShown)
@@ -138,6 +156,26 @@ export function SeasonGuide({ tmdbId, seasons }: SeasonGuideProps) {
       setActive(visible[0].seasonNumber)
     }
   }, [active, visible])
+
+  useEffect(() => {
+    if (!imdbId) return
+    let cancelled = false
+    const seasonsToLoad = visible.filter((season) => season.seasonNumber > 0)
+    Promise.all(
+      seasonsToLoad.map(async (season) => {
+        const scores = await fetchSeasonImdb(imdbId, season.seasonNumber)
+        return [season.seasonNumber, scores] as const
+      }),
+    )
+      .then((entries) => {
+        if (cancelled) return
+        setSeasonImdb(Object.fromEntries(entries))
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [imdbId, visible])
 
   useEffect(() => {
     if (!visible.length) return
@@ -209,17 +247,18 @@ export function SeasonGuide({ tmdbId, seasons }: SeasonGuideProps) {
               onClick={() => setActive(season.seasonNumber)}
             >
               <span>{season.seasonNumber === 0 ? 'Specials' : `Season ${season.seasonNumber}`}</span>
-              {season.voteAverage > 0 ? (
-                <span className={`score-chip ${scoreTone(season.voteAverage)}`}>
-                  {season.voteAverage.toFixed(1)}
-                </span>
-              ) : null}
+              {(() => {
+                const score = seasonImdb[season.seasonNumber]?.average ?? season.voteAverage
+                return score > 0 ? (
+                  <span className={`score-chip ${scoreTone(score)}`}>{score.toFixed(1)}</span>
+                ) : null
+              })()}
             </button>
           ))}
         </div>
         <div className={layerShown ? 'fade-layer' : 'fade-layer is-hidden'}>
           {view ? (
-            <SeasonBody view={view} seasons={visible} />
+            <SeasonBody view={view} seasons={visible} imdb={seasonImdb[view.seasonNumber] ?? null} />
           ) : (
             <div className="episode-pending" aria-label="Loading episodes">
               <span />

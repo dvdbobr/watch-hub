@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { posterUrl, searchPersonFilmography, searchTitles } from '../api/tmdb'
 import { useCollection } from '../store/CollectionContext'
 import { catalogKey, type SearchFilter, type TmdbTitle } from '../types'
@@ -29,6 +29,7 @@ function uniqueTitles(items: TmdbTitle[]): TmdbTitle[] {
 }
 
 export function SearchBar() {
+  const navigate = useNavigate()
   const { addTitle, isInLibrary } = useCollection()
   const [query, setQuery] = useState('')
   const [filter, setFilter] = useState<SearchFilter>('all')
@@ -38,10 +39,7 @@ export function SearchBar() {
   const [loading, setLoading] = useState(false)
   const [pendingId, setPendingId] = useState<number | null>(null)
   const [brokenIds, setBrokenIds] = useState<Set<string>>(new Set())
-  const [includePeople, setIncludePeople] = useState(false)
-  const [runId, setRunId] = useState(0)
   const boxRef = useRef<HTMLDivElement>(null)
-  const skipDebounce = useRef(false)
   const requestId = useRef(0)
 
   useEffect(() => {
@@ -53,10 +51,8 @@ export function SearchBar() {
       return
     }
 
-    const wait = skipDebounce.current ? 0 : 300
-    skipDebounce.current = false
     const id = ++requestId.current
-    const withPeople = includePeople || filter === 'person'
+    const withPeople = filter === 'person'
 
     const handle = window.setTimeout(async () => {
       setLoading(true)
@@ -86,10 +82,10 @@ export function SearchBar() {
       } finally {
         if (id === requestId.current) setLoading(false)
       }
-    }, wait)
+    }, 300)
 
     return () => window.clearTimeout(handle)
-  }, [query, filter, includePeople, runId])
+  }, [query, filter])
 
   useEffect(() => {
     function onPointerDown(event: PointerEvent) {
@@ -112,11 +108,14 @@ export function SearchBar() {
 
   function handleSubmit(event: FormEvent) {
     event.preventDefault()
-    if (query.trim().length < 2) return
-    skipDebounce.current = true
-    setIncludePeople(true)
-    setRunId((value) => value + 1)
-    setOpen(true)
+    const trimmed = query.trim()
+    if (trimmed.length < 2) return
+    setOpen(false)
+    const next = new URLSearchParams({ q: trimmed })
+    if (filter === 'movie' || filter === 'tv' || filter === 'anime') {
+      next.set('kind', filter)
+    }
+    navigate(`/browse?${next}`)
   }
 
   return (
@@ -125,10 +124,7 @@ export function SearchBar() {
         <input
           className="search-input"
           value={query}
-          onChange={(event) => {
-            setIncludePeople(false)
-            setQuery(event.target.value)
-          }}
+          onChange={(event) => setQuery(event.target.value)}
           onFocus={() => results.length > 0 && setOpen(true)}
           placeholder="Search titles or people…"
           aria-label="Search titles or people"
@@ -161,7 +157,7 @@ export function SearchBar() {
             <p className="search-status">
               {filter === 'person'
                 ? 'No people matched that search.'
-                : 'No titles matched that search. Press Enter to search by actor name.'}
+                : 'No titles matched that search. Press Enter to open Browse.'}
             </p>
           ) : (
             <div className="search-list">

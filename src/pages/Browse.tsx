@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { discoverTitles, hasApiKey } from '../api/tmdb'
+import { discoverTitles, hasApiKey, searchCatalog } from '../api/tmdb'
 import { Pager } from '../components/Pager'
 import { PosterCard } from '../components/PosterCard'
 import { BROWSE_GENRES, BROWSE_PAGE_SIZE, WATCH_PROVIDERS, WATCH_REGIONS } from '../data/catalog'
 import { useCollection } from '../store/CollectionContext'
-import { isMediaType, type MediaType, type TmdbTitle } from '../types'
+import { isMediaType, type MediaType, type SearchFilter, type TmdbTitle } from '../types'
 
 const REGION_KEY = 'watch-region'
 const KINDS: { id: MediaType; label: string }[] = [
@@ -25,8 +25,13 @@ function readRegion(): string {
 export function Browse() {
   const { addTitle, isInLibrary } = useCollection()
   const [params, setParams] = useSearchParams()
+  const query = (params.get('q') || '').trim()
+  const searching = query.length >= 2
   const rawKind = params.get('kind')
-  const kind: MediaType = rawKind && isMediaType(rawKind) ? rawKind : 'movie'
+  const activeKind: MediaType | null =
+    rawKind && isMediaType(rawKind) ? rawKind : searching ? null : 'movie'
+  const kind: MediaType = activeKind ?? 'movie'
+  const searchFilter: SearchFilter = activeKind ?? 'all'
   const providerId = params.get('provider') || ''
   const genreId = params.get('genre') || ''
   const region = params.get('region') || readRegion()
@@ -39,6 +44,7 @@ export function Browse() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [pendingId, setPendingId] = useState<number | null>(null)
+  const [personName, setPersonName] = useState<string | null>(null)
 
   const selectedGenre = BROWSE_GENRES.find((genre) => genre.id === genreId)
   const genreTmdbId =
@@ -62,7 +68,7 @@ export function Browse() {
       else merged.delete(key)
     }
     if (!('page' in next)) merged.delete('page')
-    if (!merged.get('kind')) merged.set('kind', 'movie')
+    if (!merged.get('q') && !merged.get('kind')) merged.set('kind', 'movie')
     setParams(merged)
   }
 
@@ -78,10 +84,44 @@ export function Browse() {
     if (!hasApiKey()) {
       setItems([])
       setTotalPages(1)
+      setPersonName(null)
       setLoading(false)
       setError(null)
       return
     }
+
+    if (searching) {
+      let cancelled = false
+      setLoading(true)
+      setError(null)
+      searchCatalog(query, searchFilter)
+        .then((next) => {
+          if (cancelled) return
+          const pages = Math.max(1, Math.ceil(next.items.length / BROWSE_PAGE_SIZE))
+          const safePage = Math.min(page, pages)
+          setItems(
+            next.items.slice((safePage - 1) * BROWSE_PAGE_SIZE, safePage * BROWSE_PAGE_SIZE),
+          )
+          setTotalPages(pages)
+          setPersonName(next.personName)
+        })
+        .catch((err: unknown) => {
+          if (!cancelled) {
+            setItems([])
+            setTotalPages(1)
+            setPersonName(null)
+            setError(err instanceof Error ? err.message : 'Could not search titles')
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setPersonName(null)
 
     if (genreUnavailable) {
       setItems([])
@@ -126,7 +166,20 @@ export function Browse() {
     return () => {
       cancelled = true
     }
-  }, [kind, providerId, genreId, region, genreUnavailable, genreTmdbId, selectedGenre, when, page])
+  }, [
+    searching,
+    query,
+    searchFilter,
+    kind,
+    providerId,
+    genreId,
+    region,
+    genreUnavailable,
+    genreTmdbId,
+    selectedGenre,
+    when,
+    page,
+  ])
 
   async function handleAdd(title: TmdbTitle) {
     setPendingId(title.tmdbId)
@@ -138,34 +191,53 @@ export function Browse() {
   }
 
   const providerName = WATCH_PROVIDERS.find((item) => item.id === providerId)?.name
-  const heading = [
-    when === 'upcoming' ? 'Upcoming' : when === 'rating' ? 'Top rated' : 'Hype',
-    providerName,
-    selectedGenre?.name,
-    KINDS.find((item) => item.id === kind)?.label,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const heading = searching
+    ? [`Results for “${query}”`, personName && personName.toLowerCase() !== query.toLowerCase() ? personName : null]
+        .filter(Boolean)
+        .join(' · ')
+    : [
+        when === 'upcoming' ? 'Upcoming' : when === 'rating' ? 'Top rated' : 'Hype',
+        providerName,
+        selectedGenre?.name,
+        KINDS.find((item) => item.id === kind)?.label,
+      ]
+        .filter(Boolean)
+        .join(' · ')
 
   return (
     <div className="page">
       <div className="page-intro">
-        <h1>Browse</h1>
+        <h1>{searching ? 'Search' : 'Browse'}</h1>
         <p>
-          See what’s popular on a streaming service, or pick a genre. You can combine both.
-          Catalogs come from TMDB and change by region.
+          {searching
+            ? 'Titles and people matching what you typed. Use type to narrow the grid, or clear search to browse catalogs again.'
+            : 'See what’s popular on a streaming service, or pick a genre. You can combine both. Catalogs come from TMDB and change by region.'}
         </p>
+        {searching ? (
+          <button type="button" className="btn btn-ghost search-clear" onClick={() => update({ q: null })}>
+            Clear search
+          </button>
+        ) : null}
       </div>
 
       <section className="browse-filters">
         <div className="filter-block">
           <h2>Type</h2>
           <div className="filter-pills">
+            {searching ? (
+              <button
+                type="button"
+                className={!activeKind ? 'pill active' : 'pill'}
+                onClick={() => update({ kind: null })}
+              >
+                All
+              </button>
+            ) : null}
             {KINDS.map((item) => (
               <button
                 key={item.id}
                 type="button"
-                className={kind === item.id ? 'pill active' : 'pill'}
+                className={activeKind === item.id ? 'pill active' : 'pill'}
                 onClick={() => update({ kind: item.id })}
               >
                 {item.label}
@@ -174,6 +246,8 @@ export function Browse() {
           </div>
         </div>
 
+        {searching ? null : (
+          <>
         <div className="filter-block">
           <h2>When</h2>
           <div className="filter-pills">
@@ -264,14 +338,20 @@ export function Browse() {
             ))}
           </div>
         </div>
+          </>
+        )}
       </section>
 
       {loading ? (
-        <p className="empty-state">Loading {heading.toLowerCase()}…</p>
+        <p className="empty-state">{searching ? `Searching for ${query}…` : `Loading ${heading.toLowerCase()}…`}</p>
       ) : error ? (
         <p className="row-error">{error}</p>
       ) : items.length === 0 ? (
-        <p className="empty-state">Nothing matched those filters in this region.</p>
+        <p className="empty-state">
+          {searching
+            ? 'Nothing matched that search.'
+            : 'Nothing matched those filters in this region.'}
+        </p>
       ) : (
         <section>
           <h2 className="recs-heading">{heading}</h2>

@@ -87,10 +87,22 @@ async function fetchMal(title: string, originalTitle: string, year: string): Pro
   return typeof score === 'number' && score > 0 ? score : null
 }
 
-async function fetchOmdb(imdbId: string): Promise<{ imdb: ExternalRatings['imdb']; rottenTomatoes: ExternalRatings['rottenTomatoes'] }> {
+async function fetchOmdb(
+  details: TitleDetails,
+): Promise<{ imdb: ExternalRatings['imdb']; rottenTomatoes: ExternalRatings['rottenTomatoes'] }> {
   const key = import.meta.env.VITE_OMDB_API_KEY as string | undefined
   if (!key) return { imdb: null, rottenTomatoes: null }
-  const response = await fetch(`https://www.omdbapi.com/?i=${encodeURIComponent(imdbId)}&apikey=${encodeURIComponent(key)}`)
+
+  const params = new URLSearchParams({ apikey: key })
+  if (details.imdbId) {
+    params.set('i', details.imdbId)
+  } else {
+    params.set('t', details.originalTitle || details.title)
+    if (details.year) params.set('y', details.year)
+    params.set('type', details.mediaType === 'movie' ? 'movie' : 'series')
+  }
+
+  const response = await fetch(`https://www.omdbapi.com/?${params}`)
   if (!response.ok) return { imdb: null, rottenTomatoes: null }
   const json = (await response.json()) as {
     Response?: string
@@ -113,6 +125,44 @@ async function fetchOmdb(imdbId: string): Promise<{ imdb: ExternalRatings['imdb'
   return { imdb, rottenTomatoes }
 }
 
+export function hasOmdbKey(): boolean {
+  return Boolean(import.meta.env.VITE_OMDB_API_KEY)
+}
+
+export interface SeasonImdb {
+  average: number | null
+  episodes: Record<number, number>
+}
+
+export async function fetchSeasonImdb(imdbId: string, seasonNumber: number): Promise<SeasonImdb> {
+  const empty = { average: null, episodes: {} }
+  const key = import.meta.env.VITE_OMDB_API_KEY as string | undefined
+  if (!key || !imdbId || seasonNumber <= 0) return empty
+
+  const params = new URLSearchParams({
+    apikey: key,
+    i: imdbId,
+    Season: String(seasonNumber),
+  })
+  const response = await fetch(`https://www.omdbapi.com/?${params}`)
+  if (!response.ok) return empty
+  const json = (await response.json()) as {
+    Response?: string
+    Episodes?: { Episode?: string; imdbRating?: string }[]
+  }
+  if (json.Response === 'False') return empty
+
+  const episodes: Record<number, number> = {}
+  for (const episode of json.Episodes || []) {
+    const number = Number(episode.Episode)
+    const score = Number(episode.imdbRating)
+    if (number > 0 && Number.isFinite(score) && score > 0) episodes[number] = score
+  }
+  const scores = Object.values(episodes)
+  const average = scores.length ? scores.reduce((sum, score) => sum + score, 0) / scores.length : null
+  return { average, episodes }
+}
+
 export async function getExternalRatings(details: TitleDetails): Promise<ExternalRatings> {
   const ratings: ExternalRatings = {
     imdb: null,
@@ -121,18 +171,14 @@ export async function getExternalRatings(details: TitleDetails): Promise<Externa
     anilist: null,
   }
 
-  const jobs: Promise<void>[] = []
-
-  if (details.imdbId) {
-    jobs.push(
-      fetchOmdb(details.imdbId)
-        .then((next) => {
-          ratings.imdb = next.imdb
-          ratings.rottenTomatoes = next.rottenTomatoes
-        })
-        .catch(() => undefined),
-    )
-  }
+  const jobs: Promise<void>[] = [
+    fetchOmdb(details)
+      .then((next) => {
+        ratings.imdb = next.imdb
+        ratings.rottenTomatoes = next.rottenTomatoes
+      })
+      .catch(() => undefined),
+  ]
 
   if (details.mediaType === 'anime') {
     jobs.push(

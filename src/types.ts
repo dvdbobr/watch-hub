@@ -19,6 +19,12 @@ export interface NextEpisode {
   name: string
 }
 
+export interface CastMember {
+  tmdbId: number
+  name: string
+  character: string
+}
+
 export interface TitleDetails extends TmdbTitle {
   tagline: string
   genres: string[]
@@ -34,6 +40,7 @@ export interface TitleDetails extends TmdbTitle {
   seasons: SeasonSummary[]
   imdbId: string | null
   originalTitle: string
+  cast: CastMember[]
 }
 
 export interface ExternalRatings {

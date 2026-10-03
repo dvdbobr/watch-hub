@@ -1,4 +1,11 @@
-import type { EpisodeSummary, MediaType, SearchFilter, TitleDetails, TmdbTitle } from '../types'
+import type {
+  CastMember,
+  EpisodeSummary,
+  MediaType,
+  SearchFilter,
+  TitleDetails,
+  TmdbTitle,
+} from '../types'
 import { catalogKey } from '../types'
 
 const BASE = 'https://api.themoviedb.org/3'
@@ -19,7 +26,11 @@ interface TmdbMovie {
   origin_country?: string[]
   original_language?: string
   popularity?: number
+  vote_average?: number
+  vote_count?: number
   character?: string
+  order?: number
+  episode_count?: number
 }
 
 interface TmdbListResponse {
@@ -33,6 +44,15 @@ interface TmdbEpisodeAir {
   episode_number?: number
   season_number?: number
   name?: string
+}
+
+interface TmdbCastCredit {
+  id: number
+  name?: string
+  character?: string
+  order?: number
+  total_episode_count?: number
+  roles?: { character?: string }[]
 }
 
 interface TmdbFullDetails {
@@ -73,6 +93,8 @@ interface TmdbFullDetails {
   external_ids?: { imdb_id?: string | null }
   original_name?: string
   original_title?: string
+  credits?: { cast?: TmdbCastCredit[] }
+  aggregate_credits?: { cast?: TmdbCastCredit[] }
 }
 
 export function hasApiKey(): boolean {
@@ -201,6 +223,52 @@ function uniqueTitles(items: TmdbTitle[]): TmdbTitle[] {
   })
 }
 
+function roleWeight(item: TmdbMovie): number {
+  const episodes = item.episode_count
+  if (item.media_type === 'tv' || episodes != null) {
+    const count = Math.max(1, episodes ?? 1)
+    return Math.min(1.35, 0.2 + Math.log10(1 + count) * 0.75)
+  }
+  const order = item.order ?? 4
+  if (order <= 0) return 1.25
+  if (order <= 2) return 1
+  return 0.55
+}
+
+function watchRank(item: TmdbMovie): number {
+  const votes = item.vote_count ?? 0
+  const rating = item.vote_average ?? 0
+  const popularity = item.popularity ?? 0
+  return roleWeight(item) * (votes * (1 + rating / 10) + popularity * 40)
+}
+
+function compareWatchOrder(left: TmdbMovie, right: TmdbMovie): number {
+  const byWatch = watchRank(right) - watchRank(left)
+  if (byWatch) return byWatch
+  const byVotes = (right.vote_count ?? 0) - (left.vote_count ?? 0)
+  if (byVotes) return byVotes
+  return (right.vote_average ?? 0) - (left.vote_average ?? 0)
+}
+
+const SKIP_CREDIT_GENRES = new Set([10763, 10764, 10767])
+
+function isMainCredit(item: TmdbMovie): boolean {
+  const character = (item.character || '').toLowerCase()
+  if (/\buncredited\b|\barchive footage\b|^self\b/.test(character)) return false
+  if ((item.genre_ids || []).some((id) => SKIP_CREDIT_GENRES.has(id))) return false
+
+  if (item.media_type === 'movie') {
+    return item.order == null || item.order <= 6
+  }
+
+  if (item.media_type === 'tv') {
+    const episodes = item.episode_count ?? 0
+    return episodes === 0 || episodes >= 3
+  }
+
+  return true
+}
+
 function creditFitsFilter(item: TmdbMovie, filter: SearchFilter): MediaType | null {
   const kind = item.media_type === 'movie' ? 'movie' : item.media_type === 'tv' ? 'tv' : inferMediaType(item)
   if (!kind) return null
@@ -230,16 +298,10 @@ export async function searchPersonFilmography(
   const titles = uniqueTitles(
     (credits.cast || [])
       .slice()
-      .sort((left, right) => {
-        const byDate = (right.release_date || right.first_air_date || '').localeCompare(
-          left.release_date || left.first_air_date || '',
-        )
-        if (byDate) return byDate
-        return (right.popularity || 0) - (left.popularity || 0)
-      })
+      .sort(compareWatchOrder)
       .flatMap((item) => {
         const mediaType = creditFitsFilter(item, filter)
-        if (!mediaType || !hasPoster(item)) return []
+        if (!mediaType || !hasPoster(item) || !isMainCredit(item)) return []
         return [
           {
             ...mapTitle(item, mediaType),
@@ -250,6 +312,47 @@ export async function searchPersonFilmography(
   )
 
   return { name, titles }
+}
+
+export async function searchCatalog(
+  query: string,
+  filter: SearchFilter,
+): Promise<{ items: TmdbTitle[]; personName: string | null }> {
+  const trimmed = query.trim()
+  if (trimmed.length < 2) return { items: [], personName: null }
+
+  const [titleHits, person] = await Promise.all([
+    filter === 'person' ? Promise.resolve([] as TmdbTitle[]) : searchTitles(trimmed, filter),
+    searchPersonFilmography(trimmed, filter),
+  ])
+
+  return {
+    items: uniqueTitles([...(person?.titles ?? []), ...titleHits]),
+    personName: person?.name ?? null,
+  }
+}
+
+function mapCast(data: TmdbFullDetails): CastMember[] {
+  const aggregate = data.aggregate_credits?.cast || []
+  const regular = data.credits?.cast || []
+  const billed = aggregate.length
+    ? [...aggregate].sort((left, right) => {
+        const byOrder = (left.order ?? 99) - (right.order ?? 99)
+        if (byOrder) return byOrder
+        return (right.total_episode_count ?? 0) - (left.total_episode_count ?? 0)
+      })
+    : [...regular].sort((left, right) => (left.order ?? 99) - (right.order ?? 99))
+
+  return billed.slice(0, 10).flatMap((person) => {
+    if (!person.name) return []
+    return [
+      {
+        tmdbId: person.id,
+        name: person.name,
+        character: person.character || person.roles?.[0]?.character || '',
+      },
+    ]
+  })
 }
 
 export async function getTvDetails(tmdbId: number): Promise<TmdbFullDetails> {
@@ -271,7 +374,9 @@ export async function getTitleDetails(
   tmdbId: number,
 ): Promise<TitleDetails> {
   const path = mediaType === 'movie' ? `/movie/${tmdbId}` : `/tv/${tmdbId}`
-  const data = await tmdb<TmdbFullDetails>(path, { append_to_response: 'videos,external_ids' })
+  const data = await tmdb<TmdbFullDetails>(path, {
+    append_to_response: 'videos,external_ids,credits,aggregate_credits',
+  })
   return {
     tmdbId: data.id,
     mediaType,
@@ -292,6 +397,7 @@ export async function getTitleDetails(
     status: data.status || '',
     trailerKey: pickTrailerKey(data.videos),
     imdbId: data.external_ids?.imdb_id || null,
+    cast: mapCast(data),
     seasons:
       mediaType === 'movie'
         ? []
