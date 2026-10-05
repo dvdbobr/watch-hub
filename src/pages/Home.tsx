@@ -71,18 +71,11 @@ export function Home() {
 
   return (
     <div className="page">
-      <div className="page-intro">
-        <h1>What’s on</h1>
-        <p>
-          Hype is what’s buzzing this week. Top rated is the highest TMDB scores. Browse a row to
-          see more.
-        </p>
-      </div>
-      <PosterRow heading="Hype movies" browseTo="/browse?kind=movie&when=hype" {...hypeMovies} />
+      <PosterRow heading="Trending movies" browseTo="/browse?kind=movie&when=hype" {...hypeMovies} />
       <PosterRow heading="Top rated movies" browseTo="/browse?kind=movie&when=rating" {...ratedMovies} />
-      <PosterRow heading="Hype series" browseTo="/browse?kind=tv&when=hype" {...hypeSeries} />
+      <PosterRow heading="Trending series" browseTo="/browse?kind=tv&when=hype" {...hypeSeries} />
       <PosterRow heading="Top rated series" browseTo="/browse?kind=tv&when=rating" {...ratedSeries} />
-      <PosterRow heading="Hype anime" browseTo="/browse?kind=anime&when=hype" {...hypeAnime} />
+      <PosterRow heading="Trending anime" browseTo="/browse?kind=anime&when=hype" {...hypeAnime} />
       <PosterRow heading="Top rated anime" browseTo="/browse?kind=anime&when=rating" {...ratedAnime} />
       <PosterRow
         heading="Upcoming movies"

@@ -196,7 +196,7 @@ export function Browse() {
         .filter(Boolean)
         .join(' · ')
     : [
-        when === 'upcoming' ? 'Upcoming' : when === 'rating' ? 'Top rated' : 'Hype',
+        when === 'upcoming' ? 'Upcoming' : when === 'rating' ? 'Top rated' : 'Trending',
         providerName,
         selectedGenre?.name,
         KINDS.find((item) => item.id === kind)?.label,
@@ -256,7 +256,7 @@ export function Browse() {
               className={when === 'hype' ? 'pill active' : 'pill'}
               onClick={() => update({ when: 'hype' })}
             >
-              Hype
+              Trending
             </button>
             <button
               type="button"
